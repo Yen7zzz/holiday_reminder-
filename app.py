@@ -110,11 +110,13 @@ def init_database():
         
         conn.commit()
         conn.close()
+        print("資料庫初始化完成")
 
 # ==================== 對話式記帳 AI 解析 ====================
 def extract_expense_from_natural_text(message):
     """從自然語言中提取記帳資訊"""
     message = message.strip()
+    print(f"正在解析訊息：{message}")
     
     # 常見的記帳模式
     patterns = [
@@ -123,12 +125,8 @@ def extract_expense_from_natural_text(message):
         (r'^(.+?)\s+([+\-]?)(\d+\.?\d*)(?:元|塊|錢)?$', 'desc_first'),
         
         # 自然語言格式
-        (r'.*(?:花了|花|付了|買|消費|支出).*?(\d+\.?\d*)(?:元|塊|錢).*?([^0-9\+\-]+)', 'natural_expense'),
-        (r'.*?([^0-9\+\-]+).*?(?:花了|花|付了|買|消費|支出).*?(\d+\.?\d*)(?:元|塊|錢)', 'natural_expense_reverse'),
-        
-        # 收入格式
-        (r'.*(?:賺了|收入|領了|得到|薪水).*?(\d+\.?\d*)(?:元|塊|錢).*?([^0-9\+\-]*)', 'natural_income'),
-        (r'.*?([^0-9\+\-]+).*?(?:賺了|收入|領了|得到|薪水).*?(\d+\.?\d*)(?:元|塊|錢)', 'natural_income_reverse'),
+        (r'.*(?:花了|花|付了|買|消費|支出).*?(\d+\.?\d*)(?:元|塊|錢)?.*', 'natural_expense'),
+        (r'.*(?:賺了|收入|領了|得到|薪水).*?(\d+\.?\d*)(?:元|塊|錢)?.*', 'natural_income'),
         
         # 簡單金額
         (r'^([+\-]?)(\d+\.?\d*)(?:元|塊|錢)?$', 'amount_only')
@@ -137,64 +135,72 @@ def extract_expense_from_natural_text(message):
     for pattern, pattern_type in patterns:
         match = re.search(pattern, message)
         if match:
-            return parse_match_result(match, pattern_type, message)
+            result = parse_match_result(match, pattern_type, message)
+            if result:
+                print(f"成功解析：{result}")
+                return result
     
+    print("未能解析訊息")
     return None
 
 def parse_match_result(match, pattern_type, original_message):
     """解析正規表達式匹配結果"""
     groups = match.groups()
+    print(f"匹配類型：{pattern_type}, 群組：{groups}")
     
-    if pattern_type == 'amount_first':
-        sign = groups[0]
-        amount = float(groups[1])
-        description = groups[2]
-        is_income = sign == '+' or is_income_related(description)
+    try:
+        if pattern_type == 'amount_first':
+            sign = groups[0]
+            amount = float(groups[1])
+            description = groups[2]
+            is_income = sign == '+' or is_income_related(description)
+        
+        elif pattern_type == 'desc_first':
+            description = groups[0]
+            sign = groups[1]
+            amount = float(groups[2])
+            is_income = sign == '+' or is_income_related(description)
+        
+        elif pattern_type == 'natural_expense':
+            amount = float(groups[0])
+            description = extract_description_from_message(original_message)
+            is_income = False
+        
+        elif pattern_type == 'natural_income':
+            amount = float(groups[0])
+            description = extract_description_from_message(original_message)
+            is_income = True
+        
+        elif pattern_type == 'amount_only':
+            sign = groups[0]
+            amount = float(groups[1])
+            description = "支出" if sign != '+' else "收入"
+            is_income = sign == '+'
+        
+        else:
+            return None
+        
+        # 清理描述
+        description = clean_description(description)
+        
+        return {
+            'amount': amount,
+            'description': description,
+            'is_income': is_income,
+            'confidence': 0.8
+        }
     
-    elif pattern_type == 'desc_first':
-        description = groups[0]
-        sign = groups[1]
-        amount = float(groups[2])
-        is_income = sign == '+' or is_income_related(description)
-    
-    elif pattern_type == 'natural_expense':
-        amount = float(groups[0])
-        description = groups[1].strip()
-        is_income = False
-    
-    elif pattern_type == 'natural_expense_reverse':
-        description = groups[0].strip()
-        amount = float(groups[1])
-        is_income = False
-    
-    elif pattern_type == 'natural_income':
-        amount = float(groups[0])
-        description = groups[1].strip() if groups[1] else "收入"
-        is_income = True
-    
-    elif pattern_type == 'natural_income_reverse':
-        description = groups[0].strip()
-        amount = float(groups[1])
-        is_income = True
-    
-    elif pattern_type == 'amount_only':
-        sign = groups[0]
-        amount = float(groups[1])
-        description = "支出" if sign != '+' else "收入"
-        is_income = sign == '+'
-    
-    else:
+    except (ValueError, IndexError) as e:
+        print(f"解析錯誤：{e}")
         return None
-    
-    # 清理描述
-    description = clean_description(description)
-    
-    return {
-        'amount': amount,
-        'description': description,
-        'is_income': is_income,
-        'confidence': calculate_confidence(original_message, description, amount)
-    }
+
+def extract_description_from_message(message):
+    """從訊息中提取描述"""
+    # 移除數字和單位
+    desc = re.sub(r'\d+\.?\d*(?:元|塊|錢)?', '', message)
+    # 移除動詞
+    desc = re.sub(r'花了|花|付了|買|消費|支出|賺了|收入|領了|得到', '', desc)
+    return desc.strip() or "支出"
 
 def is_income_related(text):
     """判斷是否為收入相關"""
@@ -209,21 +215,6 @@ def clean_description(description):
         description = description.replace(word, '')
     
     return description.strip() or "支出"
-
-def calculate_confidence(original, description, amount):
-    """計算解析信心度"""
-    confidence = 0.8
-    
-    # 如果包含明確的金錢詞彙，提高信心度
-    money_words = ['花', '買', '付', '錢', '元', '塊', '消費', '支出']
-    if any(word in original for word in money_words):
-        confidence += 0.1
-    
-    # 如果描述合理，提高信心度
-    if len(description) > 1 and description != "支出":
-        confidence += 0.05
-    
-    return min(confidence, 1.0)
 
 def classify_expense_smart(description, message):
     """智能分類支出"""
@@ -274,6 +265,7 @@ def add_expense_record(user_id, amount, description, is_income, raw_message):
         conn.commit()
         conn.close()
         
+        print(f"記錄已新增：ID={record_id}, 分類={category}")
         return record_id, category
 
 def get_expense_statistics(user_id, period='month'):
@@ -337,7 +329,8 @@ def calculate_days_until(target_date_str):
         current_year = get_taiwan_today().year
         current_date = get_taiwan_today()
 
-        if any(keyword in target_date_str for keyword in ["生日", "紀念日", "情人節", "七夕", "聖誕節"]):
+        # 檢查節日名稱而非日期字串
+        if any(keyword in target_date_str.split('-')[0] for keyword in ["生日", "紀念日", "情人節", "七夕", "聖誕節"]):
             target_date = target_date.replace(year=current_year)
             if target_date < current_date:
                 target_date = target_date.replace(year=current_year + 1)
@@ -356,6 +349,44 @@ def list_all_holidays():
         if days_until is not None:
             message += f"• {holiday_name}：{target_date.strftime('%m月%d日')} (還有{days_until}天)\n"
     return message
+
+def send_reminder_message(holiday_name, days_until, target_date):
+    """發送提醒訊息"""
+    reminder_id = f"{holiday_name}_{days_until}_{get_taiwan_today()}"
+    
+    if reminder_id in sent_reminders:
+        return
+    
+    if days_until in [7, 5, 3, 1, 0]:
+        if days_until == 7:
+            message = f"🔔 提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有7天！"
+        elif days_until == 5:
+            message = f"⏰ 提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有5天！"
+        elif days_until == 3:
+            message = f"🚨 重要提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有3天！"
+        elif days_until == 1:
+            message = f"🎁 最後提醒：{holiday_name} 就是明天！"
+        elif days_until == 0:
+            message = f"💕 今天就是 {holiday_name} 了！"
+        
+        try:
+            line_bot_api.push_message(YOUR_USER_ID, TextSendMessage(text=message))
+            sent_reminders.add(reminder_id)
+            print(f"提醒訊息已發送：{holiday_name}")
+        except Exception as e:
+            print(f"發送提醒失敗：{e}")
+
+def check_all_holidays():
+    """檢查所有節日並發送提醒"""
+    taiwan_time = get_taiwan_now()
+    print(f"正在檢查節日提醒... 台灣時間: {taiwan_time}")
+    
+    for holiday_name, date_str in IMPORTANT_DATES.items():
+        days_until, target_date = calculate_days_until(date_str)
+        
+        if days_until is not None:
+            print(f"{holiday_name}: 還有 {days_until} 天")
+            send_reminder_message(holiday_name, days_until, target_date)
 
 # ==================== 訊息處理 ====================
 def is_expense_query(message):
@@ -397,20 +428,35 @@ def callback():
     
     return 'OK'
 
+@app.route("/manual_check", methods=['GET'])
+def manual_check():
+    """手動觸發節日檢查"""
+    try:
+        check_all_holidays()
+        taiwan_time = get_taiwan_now()
+        return f"✅ 節日檢查完成 (台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')})", 200
+    except Exception as e:
+        print(f"手動檢查錯誤：{e}")
+        return f"❌ 檢查失敗：{e}", 500
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text.strip()
+    
+    print(f"收到訊息 - 用戶: {user_id}, 訊息: {user_message}")
     
     try:
         reply_message = ""
         
         # 節日相關查詢
         if is_holiday_query(user_message) or '節日' in user_message:
+            print("判斷為節日查詢")
             reply_message = list_all_holidays()
         
         # 記帳統計查詢
         elif is_expense_query(user_message):
+            print("判斷為記帳統計查詢")
             if '今天' in user_message or '今日' in user_message:
                 stats = get_expense_statistics(user_id, 'day')
             elif '本週' in user_message:
@@ -422,13 +468,15 @@ def handle_message(event):
         
         # 說明功能
         elif user_message in ['說明', '幫助', '功能', '怎麼用']:
+            print("判斷為說明查詢")
             reply_message = get_help_message()
         
         # 嘗試解析為記帳
         elif contains_number(user_message):
+            print("判斷為記帳訊息")
             expense_data = extract_expense_from_natural_text(user_message)
             
-            if expense_data and expense_data['confidence'] > 0.6:
+            if expense_data:
                 record_id, category = add_expense_record(
                     user_id, 
                     expense_data['amount'], 
@@ -446,7 +494,10 @@ def handle_message(event):
         
         # 其他一般對話
         else:
+            print("判斷為一般對話")
             reply_message = "🤖 我是您的智能生活助手！\n\n我可以幫您：\n💰 記帳：直接說「買早餐65塊」\n📅 節日：輸入「查看節日」\n📊 統計：問「今天花了多少錢」\n\n輸入「說明」查看完整功能"
+        
+        print(f"回覆訊息：{reply_message}")
         
         line_bot_api.reply_message(
             event.reply_token,
@@ -455,10 +506,16 @@ def handle_message(event):
         
     except Exception as e:
         print(f"處理訊息錯誤：{e}")
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text="❌ 處理失敗，請稍後再試")
-        )
+        import traceback
+        traceback.print_exc()
+        
+        try:
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="❌ 處理失敗，請稍後再試")
+            )
+        except:
+            print("連回覆錯誤訊息都失敗了")
 
 def format_expense_statistics(stats):
     """格式化記帳統計"""
@@ -507,9 +564,37 @@ def get_help_message():
 
 💬 直接跟我聊天就能記帳，超簡單！"""
 
+def run_scheduler():
+    """運行排程器"""
+    # 每天台灣時間00:00和12:00檢查節日
+    schedule.every().day.at("00:00").do(check_all_holidays)
+    schedule.every().day.at("12:00").do(check_all_holidays)
+    
+    print(f"排程器已啟動 - 將在每天台灣時間 00:00 和 12:00 執行檢查")
+    print(f"當前台灣時間: {get_taiwan_now()}")
+    
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(60)
+        except Exception as e:
+            print(f"排程器錯誤：{e}")
+            time.sleep(60)
+
 # 初始化資料庫
+print("正在初始化資料庫...")
 init_database()
+
+# 在背景執行排程器
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+# 執行啟動檢查
+print("執行啟動檢查...")
+print(f"當前台灣時間: {get_taiwan_now()}")
+check_all_holidays()
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
+    print(f"應用程式啟動在 port {port}")
     app.run(host='0.0.0.0', port=port, debug=False)
