@@ -33,7 +33,7 @@ line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # 設定 Google Gemini API
-GOOGLE_AI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', '')
+GOOGLE_AI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', 'AIzaSyCYACeBwSOLRligY1J1brn6dxdkID0SLfU')
 if GOOGLE_AI_API_KEY:
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')  # 免費版模型
