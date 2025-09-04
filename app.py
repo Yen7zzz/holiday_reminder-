@@ -16,20 +16,40 @@ app = Flask(__name__)
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# Line Bot 設定 - 從環境變數取得
-CHANNEL_ACCESS_TOKEN = os.environ.get('KRk+bAgSSozHdXGPpcFYLSYMk+4T27W/OTDDJmECpMT4uKQgQDGkLGl5+IRVURdrQ7RHLF1vUqnQU542ZFBWZJZapRi/zg0iuJJeAGM7kXIhFJqHAeKv88+yqHayFXa140YGdC2Va1wahK9QNfV8uwdB04t89/1O/w1cDnyilFU=')
-CHANNEL_SECRET = os.environ.get('b7f5d7b95923fbc5f494619885a68a04')
-YOUR_USER_ID = os.environ.get('Ueeef67149e409ffe30e60328a379e5a0')
+# Line Bot 設定 - 從環境變數取得（正確寫法）
+CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
+YOUR_USER_ID = os.environ.get('YOUR_USER_ID')
 
 # 檢查環境變數是否設定
 if not CHANNEL_ACCESS_TOKEN:
     print("❌ 錯誤：CHANNEL_ACCESS_TOKEN 環境變數未設定")
+    print("   請在 Render 設定中添加此環境變數")
 if not CHANNEL_SECRET:
     print("❌ 錯誤：CHANNEL_SECRET 環境變數未設定")
+    print("   請在 Render 設定中添加此環境變數")
+if not YOUR_USER_ID:
+    print("⚠️ 警告：YOUR_USER_ID 環境變數未設定（可選）")
+
+# 如果關鍵環境變數未設定，提供預設值避免啟動失敗
+if not CHANNEL_ACCESS_TOKEN:
+    CHANNEL_ACCESS_TOKEN = "DUMMY_TOKEN"
+    print("🔧 使用預設 CHANNEL_ACCESS_TOKEN，請盡快設定正確值")
+
+if not CHANNEL_SECRET:
+    CHANNEL_SECRET = "DUMMY_SECRET"  
+    print("🔧 使用預設 CHANNEL_SECRET，請盡快設定正確值")
 
 # Line Bot API 設定（舊版語法）
-line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(CHANNEL_SECRET)
+try:
+    line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+    handler = WebhookHandler(CHANNEL_SECRET)
+    print("✅ Line Bot API 初始化成功")
+except Exception as e:
+    print(f"❌ Line Bot API 初始化失敗：{e}")
+    # 設定空的處理器以避免啟動錯誤
+    line_bot_api = None
+    handler = None
 
 # 資料庫鎖
 db_lock = Lock()
