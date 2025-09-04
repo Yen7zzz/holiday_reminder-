@@ -6,10 +6,9 @@ import re
 import sqlite3
 from threading import Lock
 
-from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot import LineBotApi, WebhookHandler
+from linebot.exceptions import InvalidSignatureError
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from flask import Flask, request, abort
 
 app = Flask(__name__)
@@ -28,8 +27,8 @@ if not CHANNEL_ACCESS_TOKEN:
 if not CHANNEL_SECRET:
     print("❌ 錯誤：CHANNEL_SECRET 環境變數未設定")
 
-# Line Bot API v3 設定
-configuration = Configuration(access_token=CHANNEL_ACCESS_TOKEN)
+# Line Bot API 設定（舊版語法）
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # 資料庫鎖
@@ -319,7 +318,7 @@ def home():
     🤖 智能生活助手運行中！<br>
     台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}<br>
     資料庫路徑: {get_db_path()}<br>
-    line-bot-sdk 版本: v3<br>
+    line-bot-sdk 版本: 1.20.0<br>
     環境變數檢查:<br>
     - CHANNEL_ACCESS_TOKEN: {'✅' if CHANNEL_ACCESS_TOKEN else '❌'}<br>
     - CHANNEL_SECRET: {'✅' if CHANNEL_SECRET else '❌'}
@@ -338,7 +337,7 @@ def callback():
     
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessageContent)
+@handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text.strip()
@@ -428,17 +427,13 @@ def handle_message(event):
             reply_message = f"🤖 您好！我是智能生活助手\n\n我可以幫您：\n💰 記帳：「午餐花了80」\n📊 統計：「今天花了多少錢」\n📅 節日：「查看節日」\n\n輸入「說明」查看完整功能"
             print("💬 回應一般對話")
         
-        # 回覆訊息
+        # 回覆訊息（舊版語法）
         if reply_message:
             print(f"📤 準備回覆：'{reply_message[:50]}...'")
-            with ApiClient(configuration) as api_client:
-                line_bot_api = MessagingApi(api_client)
-                line_bot_api.reply_message_with_http_info(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text=reply_message)]
-                    )
-                )
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply_message)
+            )
             print("✅ 回覆成功")
         
     except Exception as e:
@@ -448,14 +443,10 @@ def handle_message(event):
         
         try:
             error_message = f"❌ 系統錯誤，請稍後再試\n錯誤類型：{type(e).__name__}"
-            with ApiClient(configuration) as api_client:
-                line_bot_api = MessagingApi(api_client)
-                line_bot_api.reply_message_with_http_info(
-                    ReplyMessageRequest(
-                        reply_token=event.reply_token,
-                        messages=[TextMessage(text=error_message)]
-                    )
-                )
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=error_message)
+            )
         except Exception as reply_error:
             print(f"❌ 連錯誤回覆都失敗：{reply_error}")
 
