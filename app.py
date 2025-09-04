@@ -16,40 +16,31 @@ app = Flask(__name__)
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# Line Bot 設定 - 從環境變數取得（正確寫法）
+# Line Bot 設定 - 從環境變數取得
 CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
 YOUR_USER_ID = os.environ.get('YOUR_USER_ID')
 
-# 檢查環境變數是否設定
-if not CHANNEL_ACCESS_TOKEN:
-    print("❌ 錯誤：CHANNEL_ACCESS_TOKEN 環境變數未設定")
-    print("   請在 Render 設定中添加此環境變數")
-if not CHANNEL_SECRET:
-    print("❌ 錯誤：CHANNEL_SECRET 環境變數未設定")
-    print("   請在 Render 設定中添加此環境變數")
-if not YOUR_USER_ID:
-    print("⚠️ 警告：YOUR_USER_ID 環境變數未設定（可選）")
+# 檢查環境變數並顯示狀態
+print("🔍 環境變數檢查:")
+print(f"- CHANNEL_ACCESS_TOKEN: {'✅ 已設定' if CHANNEL_ACCESS_TOKEN else '❌ 未設定'}")
+print(f"- CHANNEL_SECRET: {'✅ 已設定' if CHANNEL_SECRET else '❌ 未設定'}")
+print(f"- YOUR_USER_ID: {'✅ 已設定' if YOUR_USER_ID else '⚠️ 未設定'}")
 
-# 如果關鍵環境變數未設定，提供預設值避免啟動失敗
-if not CHANNEL_ACCESS_TOKEN:
-    CHANNEL_ACCESS_TOKEN = "DUMMY_TOKEN"
-    print("🔧 使用預設 CHANNEL_ACCESS_TOKEN，請盡快設定正確值")
+# 如果關鍵環境變數未設定，停止執行
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    print("❌ 必要的環境變數未設定，無法啟動服務")
+    print("請確保在 Render 中設定了 CHANNEL_ACCESS_TOKEN 和 CHANNEL_SECRET")
+    exit(1)
 
-if not CHANNEL_SECRET:
-    CHANNEL_SECRET = "DUMMY_SECRET"  
-    print("🔧 使用預設 CHANNEL_SECRET，請盡快設定正確值")
-
-# Line Bot API 設定（舊版語法）
+# Line Bot API 設定
 try:
     line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
     handler = WebhookHandler(CHANNEL_SECRET)
     print("✅ Line Bot API 初始化成功")
 except Exception as e:
     print(f"❌ Line Bot API 初始化失敗：{e}")
-    # 設定空的處理器以避免啟動錯誤
-    line_bot_api = None
-    handler = None
+    exit(1)
 
 # 資料庫鎖
 db_lock = Lock()
@@ -341,7 +332,8 @@ def home():
     line-bot-sdk 版本: 1.20.0<br>
     環境變數檢查:<br>
     - CHANNEL_ACCESS_TOKEN: {'✅' if CHANNEL_ACCESS_TOKEN else '❌'}<br>
-    - CHANNEL_SECRET: {'✅' if CHANNEL_SECRET else '❌'}
+    - CHANNEL_SECRET: {'✅' if CHANNEL_SECRET else '❌'}<br>
+    - YOUR_USER_ID: {'✅' if YOUR_USER_ID else '❌'}
     """
 
 @app.route("/callback", methods=['POST'])
@@ -447,7 +439,7 @@ def handle_message(event):
             reply_message = f"🤖 您好！我是智能生活助手\n\n我可以幫您：\n💰 記帳：「午餐花了80」\n📊 統計：「今天花了多少錢」\n📅 節日：「查看節日」\n\n輸入「說明」查看完整功能"
             print("💬 回應一般對話")
         
-        # 回覆訊息（舊版語法）
+        # 回覆訊息
         if reply_message:
             print(f"📤 準備回覆：'{reply_message[:50]}...'")
             line_bot_api.reply_message(
