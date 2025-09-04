@@ -1,6 +1,17 @@
+# Line Bot SDK
 line-bot-sdk==1.20.0
+
+# Web Framework
 Flask==2.3.3
-schedule==1.2.0
-gunicorn==21.2.0
-pytz==2023.3
 Werkzeug==2.3.7
+
+# WSGI Server
+gunicorn==21.2.0
+
+# Utilities
+pytz==2023.3
+schedule==1.2.0
+
+# 可選：明確指定其他可能需要的依賴
+requests>=2.25.0
+urllib3>=1.26.0
