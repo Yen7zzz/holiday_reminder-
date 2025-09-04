@@ -12,6 +12,10 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from flask import Flask, request, abort
+import google.generativeai as genai
+import os
+from typing import Optional
+
 
 app = Flask(__name__)
 
@@ -27,6 +31,81 @@ YOUR_USER_ID = os.environ.get('YOUR_USER_ID', 'Ueeef67149e409ffe30e60328a379e5a0
 # Line Bot API 設定
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
+
+# 設定 Google Gemini API
+GOOGLE_AI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', '')
+if GOOGLE_AI_API_KEY:
+    genai.configure(api_key=GOOGLE_AI_API_KEY)
+    model = genai.GenerativeModel('gemini-1.5-flash')  # 免費版模型
+
+
+def generate_ai_response(user_message: str, user_id: str) -> Optional[str]:
+    """使用 Google Gemini 生成 AI 回應"""
+    try:
+        if not GOOGLE_AI_API_KEY:
+            return None
+
+        # 設定 AI 的角色和個性
+        system_prompt = """你是一個友善的智能生活助手機器人，具有以下特色：
+
+        🤖 個性特色：
+        - 溫暖友善，像朋友一樣聊天
+        - 用繁體中文回應
+        - 會用適當的 emoji 讓對話更生動
+        - 專精於生活建議、記帳協助、節日提醒
+
+        💡 回應原則：
+        - 回應要簡潔有力，不要太長
+        - 如果是記帳相關問題，提醒用戶可以直接輸入數字記帳
+        - 如果是節日相關，可以提及你會自動提醒重要節日
+        - 保持正面樂觀的語調
+
+        請用這個角色回應用戶的訊息。"""
+
+        # 組合完整的對話
+        full_prompt = f"{system_prompt}\n\n用戶訊息：{user_message}"
+
+        # 生成回應
+        response = model.generate_content(full_prompt)
+
+        if response.text:
+            # 限制回應長度避免 Line 訊息過長
+            ai_response = response.text.strip()
+            if len(ai_response) > 300:  # Line 建議訊息不要太長
+                ai_response = ai_response[:280] + "..."
+
+            return ai_response
+        else:
+            return None
+
+    except Exception as e:
+        print(f"AI 回應生成失敗：{e}")
+        return None
+
+
+def should_use_ai_response(user_message: str) -> bool:
+    """判斷是否應該使用 AI 回應"""
+    # 如果是既有功能的關鍵字，就不用 AI
+    existing_functions = [
+        '測試', '說明', '幫助', '功能', '使用說明',
+        '節日', '查看節日', '重要節日', '紀念日', '生日',
+        '手動檢查', '時間',
+        '今天花', '今日支出', '今天支出', '花了多少',
+        '本週', '這週', '週支出', '本月', '這個月', '月支出', '收支'
+    ]
+
+    # 如果包含數字，可能是記帳功能
+    import re
+    if re.search(r'\d+', user_message):
+        return False
+
+    # 如果是既有功能關鍵字
+    for keyword in existing_functions:
+        if keyword in user_message:
+            return False
+
+    return True
+
 
 # 資料庫鎖
 db_lock = Lock()
@@ -59,20 +138,23 @@ EXPENSE_KEYWORDS = {
 # 用來記錄已發送的提醒，避免重複發送
 sent_reminders = set()
 
+
 def get_taiwan_now():
     """取得台灣當前時間"""
     return datetime.datetime.now(TAIWAN_TZ)
 
+
 def get_taiwan_today():
     """取得台灣今天的日期"""
     return get_taiwan_now().date()
+
 
 def init_database():
     """初始化資料庫"""
     try:
         # 使用當前目錄而非 /tmp
         db_path = 'life_assistant.db'
-        
+
         with db_lock:
             conn = sqlite3.connect(db_path, timeout=30)
             cursor = conn.cursor()
@@ -102,6 +184,7 @@ def init_database():
             print(f"✅ 資料庫初始化成功，路徑：{db_path}")
     except Exception as e:
         print(f"❌ 資料庫初始化失敗：{e}")
+
 
 def parse_expense_message(message):
     """解析記帳訊息"""
@@ -142,6 +225,7 @@ def parse_expense_message(message):
         'is_income': is_income
     }
 
+
 def classify_expense(description, message):
     """分類支出"""
     full_text = f"{description} {message}".lower()
@@ -152,6 +236,7 @@ def classify_expense(description, message):
                 return category
 
     return '其他'
+
 
 def add_expense_record(user_id, amount, description, is_income):
     """新增記帳記錄"""
@@ -186,6 +271,7 @@ def add_expense_record(user_id, amount, description, is_income):
     except Exception as e:
         print(f"❌ 新增記錄失敗：{e}")
         return None, None
+
 
 def get_statistics(user_id, period='day'):
     """取得統計"""
@@ -243,6 +329,7 @@ def get_statistics(user_id, period='day'):
         print(f"❌ 取得統計失敗：{e}")
         return None
 
+
 def format_statistics(stats):
     """格式化統計訊息"""
     if not stats:
@@ -268,6 +355,7 @@ def format_statistics(stats):
 
     return message
 
+
 def calculate_days_until(target_date_str):
     """計算距離目標日期還有幾天（使用台灣時間）"""
     try:
@@ -285,6 +373,7 @@ def calculate_days_until(target_date_str):
         return days_until, target_date
     except ValueError:
         return None, None
+
 
 def send_reminder_message(holiday_name, days_until, target_date):
     """發送提醒訊息"""
@@ -315,6 +404,7 @@ def send_reminder_message(holiday_name, days_until, target_date):
     except Exception as e:
         print(f"發送訊息失敗：{e}")
 
+
 def check_all_holidays():
     """檢查所有節日並發送提醒"""
     taiwan_time = get_taiwan_now()
@@ -328,11 +418,13 @@ def check_all_holidays():
             if days_until in [7, 5, 3, 1, 0]:
                 send_reminder_message(holiday_name, days_until, target_date)
 
+
 def clear_old_reminders():
     """清除舊的提醒記錄（避免記憶體無限增長）"""
     today_str = str(get_taiwan_today())
     global sent_reminders
     sent_reminders = {r for r in sent_reminders if today_str in r}
+
 
 def list_all_holidays():
     """列出所有節日"""
@@ -348,6 +440,7 @@ def list_all_holidays():
 
     return message
 
+
 @app.route("/", methods=['GET'])
 def home():
     taiwan_time = get_taiwan_now()
@@ -357,6 +450,7 @@ def home():
     功能: 節日提醒 + 記帳管理<br>
     資料庫: life_assistant.db<br>
     """
+
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -371,6 +465,7 @@ def callback():
 
     return 'OK'
 
+
 @app.route("/manual_check", methods=['GET'])
 def manual_check():
     """手動觸發節日檢查 - 供外部排程服務使用"""
@@ -381,6 +476,7 @@ def manual_check():
     except Exception as e:
         print(f"手動檢查錯誤：{e}")
         return f"❌ 檢查失敗：{e}", 500
+
 
 @app.route("/status", methods=['GET'])
 def status():
@@ -398,6 +494,7 @@ def status():
     }
 
     return json.dumps(status_info, ensure_ascii=False, indent=2)
+
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -478,6 +575,11 @@ def handle_message(event):
             reply_message = format_statistics(stats)
             print("📊 回應本月統計")
 
+        elif any(keyword in user_message for keyword in ['幹', '綾小路清隆', '輕井澤惠', '高原寺', '你是誰', '你誰啊']):
+            stats = get_statistics(user_id, 'month')
+            reply_message = format_statistics(stats)
+            print("📊 回應本月統計")
+
         # 7. 記帳功能
         elif re.search(r'\d+', user_message):
             print("💰 判斷為記帳訊息")
@@ -503,10 +605,17 @@ def handle_message(event):
                 reply_message = "🤔 無法理解您的記帳格式\n\n請嘗試：\n• 早餐65\n• 午餐花了120\n• +50000薪水"
             print("💰 處理記帳完成")
 
-        # 8. 其他對話
-        else:
-            reply_message = f"🤖 您好！我是智能生活助手\n\n我可以幫您：\n💰 記帳：「午餐花了80」\n📊 統計：「今天花了多少錢」\n📅 節日：「查看節日」\n\n輸入「說明」查看完整功能"
-            print("💬 回應一般對話")
+        # 8. AI 智能對話 (新增這個部分)
+        elif should_use_ai_response(user_message):
+            print("🤖 使用 AI 生成回應")
+            ai_response = generate_ai_response(user_message, user_id)
+
+            if ai_response:
+                reply_message = f"🤖 {ai_response}"
+                print("🤖 AI 回應生成成功")
+            else:
+                reply_message = f"🤖 您好！我是智能生活助手\n\n我可以幫您：\n💰 記帳：「午餐花了80」\n📊 統計：「今天花了多少錢」\n📅 節日：「查看節日」\n\n輸入「說明」查看完整功能"
+                print("🤖 AI 回應失敗，使用預設回應")
 
         # 回覆訊息
         if reply_message:
@@ -531,6 +640,7 @@ def handle_message(event):
         except Exception as reply_error:
             print(f"❌ 連錯誤回覆都失敗：{reply_error}")
 
+
 def run_scheduler():
     """運行排程器（使用台灣時區）"""
     # 每天台灣時間凌晨00:00檢查
@@ -550,6 +660,7 @@ def run_scheduler():
         except Exception as e:
             print(f"排程器錯誤：{e}")
             time.sleep(60)
+
 
 # 初始化
 print("🚀 正在啟動智能生活助手...")
