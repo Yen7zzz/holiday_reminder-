@@ -4,8 +4,10 @@ import pytz
 import json
 import re
 import sqlite3
+import schedule
+import time
+import threading
 from threading import Lock
-
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
@@ -16,46 +18,30 @@ app = Flask(__name__)
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# Line Bot 設定 - 從環境變數取得
-CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN')
-CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET')
-YOUR_USER_ID = os.environ.get('YOUR_USER_ID')
-
-# 檢查環境變數並顯示狀態
-print("🔍 環境變數檢查:")
-print(f"- CHANNEL_ACCESS_TOKEN: {'✅ 已設定' if CHANNEL_ACCESS_TOKEN else '❌ 未設定'}")
-print(f"- CHANNEL_SECRET: {'✅ 已設定' if CHANNEL_SECRET else '❌ 未設定'}")
-print(f"- YOUR_USER_ID: {'✅ 已設定' if YOUR_USER_ID else '⚠️ 未設定'}")
-
-# 如果關鍵環境變數未設定，停止執行
-if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
-    print("❌ 必要的環境變數未設定，無法啟動服務")
-    print("請確保在 Render 中設定了 CHANNEL_ACCESS_TOKEN 和 CHANNEL_SECRET")
-    exit(1)
+# Line Bot 設定 - 從環境變數取得（使用預設值確保可以運行）
+CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN',
+                                      'KRk+bAgSSozHdXGPpcFYLSYMk+4T27W/OTDDJmECpMT4uKQgQDGkLGl5+IRVURdrQ7RHLF1vUqnQU542ZFBWZJZapRi/zg0iuJJeAGM7kXIhFJqHAeKv88+yqHayFXa140YGdC2Va1wahK9QNfV8uwdB04t89/1O/w1cDnyilFU=')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', 'b7f5d7b95923fbc5f494619885a68a04')
+YOUR_USER_ID = os.environ.get('YOUR_USER_ID', 'Ueeef67149e409ffe30e60328a379e5a0')
 
 # Line Bot API 設定
-try:
-    line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
-    handler = WebhookHandler(CHANNEL_SECRET)
-    print("✅ Line Bot API 初始化成功")
-except Exception as e:
-    print(f"❌ Line Bot API 初始化失敗：{e}")
-    exit(1)
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
 # 資料庫鎖
 db_lock = Lock()
 
-# 節日資料 - MM-DD 格式
+# 節日資料 - 保持原有格式但支援記帳功能
 IMPORTANT_DATES = {
-    "七夕": "08-29",
-    "老婆生日": "02-26",
-    "哥哥生日": "03-05",
-    "媽媽生日": "04-21",
-    "爸爸生日": "12-21",
-    "結婚紀念日": "01-16",
-    "情人節": "02-14",
-    "聖誕節": "12-25",
-    "蝦皮慶典": "09-09",
+    "七夕": "2025-08-29",
+    "老婆生日": "1998-02-26",
+    "哥哥生日": "1996-03-05",
+    "媽媽生日": "1964-04-21",
+    "爸爸生日": "1963-12-21",
+    "結婚紀念日": "2025-01-16",
+    "情人節": "2025-02-14",
+    "聖誕節": "2025-12-25",
+    "蝦皮慶典": "2025-09-09",
 }
 
 # 支出分類關鍵字
@@ -70,20 +56,27 @@ EXPENSE_KEYWORDS = {
     '其他': ['禮物', '捐款', '罰款', '手續費', '雜費']
 }
 
+# 用來記錄已發送的提醒，避免重複發送
+sent_reminders = set()
+
 def get_taiwan_now():
     """取得台灣當前時間"""
     return datetime.datetime.now(TAIWAN_TZ)
 
+def get_taiwan_today():
+    """取得台灣今天的日期"""
+    return get_taiwan_now().date()
+
 def init_database():
     """初始化資料庫"""
     try:
-        # 使用 /tmp 目錄
-        db_path = os.path.join('/tmp', 'life_assistant.db')
+        # 使用當前目錄而非 /tmp
+        db_path = 'life_assistant.db'
         
         with db_lock:
-            conn = sqlite3.connect(db_path, timeout=20)
+            conn = sqlite3.connect(db_path, timeout=30)
             cursor = conn.cursor()
-            
+
             # 記帳記錄表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS expenses (
@@ -97,56 +90,52 @@ def init_database():
                     created_at TEXT NOT NULL
                 )
             ''')
-            
+
             # 創建索引
             cursor.execute('''
                 CREATE INDEX IF NOT EXISTS idx_user_date 
                 ON expenses(user_id, date)
             ''')
-            
+
             conn.commit()
             conn.close()
             print(f"✅ 資料庫初始化成功，路徑：{db_path}")
     except Exception as e:
         print(f"❌ 資料庫初始化失敗：{e}")
 
-def get_db_path():
-    """取得資料庫路徑"""
-    return os.path.join('/tmp', 'life_assistant.db')
-
 def parse_expense_message(message):
     """解析記帳訊息"""
     message = message.strip()
     print(f"🔍 開始解析訊息：'{message}'")
-    
+
     # 尋找數字
     numbers = re.findall(r'\d+(?:\.\d+)?', message)
     if not numbers:
         print("❌ 未找到數字")
         return None
-    
+
     amount = float(numbers[0])
     print(f"💰 找到金額：{amount}")
-    
+
     # 判斷收入或支出
     is_income = '+' in message or any(word in message for word in ['薪水', '收入', '賺', '領', '獎金', '入帳'])
-    
+
     # 提取描述
     description = message
     for num in numbers:
         description = description.replace(num, '')
-    
+
     # 移除常見詞彙
     remove_words = ['元', '塊', '錢', '花了', '花', '買', '付了', '付', '+', '-', '的', '了']
     for word in remove_words:
         description = description.replace(word, '')
-    
+
     description = description.strip()
     if not description:
         description = "收入" if is_income else "支出"
-    
+
     print(f"📝 描述：'{description}', 是否為收入：{is_income}")
-    
+
     return {
         'amount': amount,
         'description': description,
@@ -156,61 +145,57 @@ def parse_expense_message(message):
 def classify_expense(description, message):
     """分類支出"""
     full_text = f"{description} {message}".lower()
-    
+
     for category, keywords in EXPENSE_KEYWORDS.items():
         for keyword in keywords:
             if keyword in full_text:
                 return category
-    
+
     return '其他'
 
 def add_expense_record(user_id, amount, description, is_income):
     """新增記帳記錄"""
     try:
-        db_path = get_db_path()
         with db_lock:
-            conn = sqlite3.connect(db_path, timeout=20)
+            conn = sqlite3.connect('life_assistant.db', timeout=30)
             cursor = conn.cursor()
-            
+
             taiwan_now = get_taiwan_now()
             date_str = taiwan_now.strftime('%Y-%m-%d')
             created_at = taiwan_now.strftime('%Y-%m-%d %H:%M:%S')
-            
+
             if is_income:
                 category = '收入'
                 record_type = 'income'
             else:
                 category = classify_expense(description, description)
                 record_type = 'expense'
-            
+
             cursor.execute('''
                 INSERT INTO expenses (user_id, date, amount, category, description, type, created_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             ''', (user_id, date_str, amount, category, description, record_type, created_at))
-            
+
             record_id = cursor.lastrowid
             conn.commit()
             conn.close()
-            
+
             print(f"✅ 記錄已新增：ID={record_id}, 分類={category}")
             return record_id, category
-    
+
     except Exception as e:
         print(f"❌ 新增記錄失敗：{e}")
-        import traceback
-        traceback.print_exc()
         return None, None
 
 def get_statistics(user_id, period='day'):
     """取得統計"""
     try:
-        db_path = get_db_path()
         with db_lock:
-            conn = sqlite3.connect(db_path, timeout=20)
+            conn = sqlite3.connect('life_assistant.db', timeout=30)
             cursor = conn.cursor()
-            
+
             taiwan_now = get_taiwan_now()
-            
+
             if period == 'day':
                 start_date = taiwan_now.strftime('%Y-%m-%d')
                 period_name = "今日"
@@ -221,9 +206,9 @@ def get_statistics(user_id, period='day'):
             else:
                 start_date = taiwan_now.replace(day=1).strftime('%Y-%m-%d')
                 period_name = "本月"
-            
+
             end_date = taiwan_now.strftime('%Y-%m-%d')
-            
+
             # 支出統計
             cursor.execute('''
                 SELECT category, SUM(amount) FROM expenses 
@@ -231,21 +216,21 @@ def get_statistics(user_id, period='day'):
                 GROUP BY category
                 ORDER BY SUM(amount) DESC
             ''', (user_id, start_date, end_date))
-            
+
             expense_stats = cursor.fetchall()
             total_expense = sum(amount for _, amount in expense_stats) if expense_stats else 0
-            
+
             # 收入統計
             cursor.execute('''
                 SELECT SUM(amount) FROM expenses 
                 WHERE user_id = ? AND date >= ? AND date <= ? AND type = 'income'
             ''', (user_id, start_date, end_date))
-            
+
             income_result = cursor.fetchone()
             total_income = income_result[0] if income_result[0] else 0
-            
+
             conn.close()
-            
+
             return {
                 'period': period_name,
                 'total_expense': total_expense,
@@ -253,7 +238,7 @@ def get_statistics(user_id, period='day'):
                 'balance': total_income - total_expense,
                 'expense_by_category': expense_stats
             }
-    
+
     except Exception as e:
         print(f"❌ 取得統計失敗：{e}")
         return None
@@ -262,17 +247,17 @@ def format_statistics(stats):
     """格式化統計訊息"""
     if not stats:
         return "❌ 查詢統計失敗"
-    
+
     message = f"📊 {stats['period']}帳務統計\n"
     message += "━━━━━━━━━━━━━━━━\n"
     message += f"💰 收入：${stats['total_income']:,.0f}\n"
     message += f"💸 支出：${stats['total_expense']:,.0f}\n"
-    
+
     if stats['balance'] >= 0:
         message += f"💵 餘額：+${stats['balance']:,.0f}\n\n"
     else:
         message += f"💵 餘額：${stats['balance']:,.0f}\n\n"
-    
+
     if stats['expense_by_category']:
         message += "📂 支出分類：\n"
         for category, amount in stats['expense_by_category'][:5]:
@@ -280,47 +265,88 @@ def format_statistics(stats):
             message += f"• {category}：${amount:,.0f} ({percentage:.1f}%)\n"
     else:
         message += "本期間無支出記錄"
-    
+
     return message
 
-def list_holidays():
-    """列出節日"""
+def calculate_days_until(target_date_str):
+    """計算距離目標日期還有幾天（使用台灣時間）"""
     try:
-        taiwan_time = get_taiwan_now()
-        current_year = taiwan_time.year
-        current_date = taiwan_time.date()
-        
-        message = f"📅 重要節日 ({current_year}年)：\n\n"
-        holiday_list = []
-        
-        for holiday_name, date_str in IMPORTANT_DATES.items():
-            try:
-                month_day = datetime.datetime.strptime(date_str, "%m-%d")
-                target_date = datetime.date(current_year, month_day.month, month_day.day)
-                
-                if target_date < current_date:
-                    target_date = datetime.date(current_year + 1, month_day.month, month_day.day)
-                
-                days_until = (target_date - current_date).days
-                holiday_list.append((days_until, holiday_name, target_date))
-                
-            except Exception as date_error:
-                print(f"❌ 解析節日日期失敗：{holiday_name} - {date_error}")
-                continue
-        
-        holiday_list.sort(key=lambda x: x[0])
-        
-        for days_until, holiday_name, target_date in holiday_list:
-            if days_until == 0:
-                message += f"🎉 {holiday_name}：今天！\n"
-            else:
-                message += f"• {holiday_name}：{target_date.strftime('%m月%d日')} (還有{days_until}天)\n"
-        
-        return message
-        
+        target_date = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
+        current_year = get_taiwan_today().year
+        current_date = get_taiwan_today()
+
+        # 如果是年度循環的節日（生日、紀念日等）
+        if any(keyword in target_date_str for keyword in ["生日", "紀念日", "情人節", "七夕", "聖誕節"]):
+            target_date = target_date.replace(year=current_year)
+            if target_date < current_date:
+                target_date = target_date.replace(year=current_year + 1)
+
+        days_until = (target_date - current_date).days
+        return days_until, target_date
+    except ValueError:
+        return None, None
+
+def send_reminder_message(holiday_name, days_until, target_date):
+    """發送提醒訊息"""
+    # 建立唯一的提醒 ID，避免同一天重複發送
+    reminder_id = f"{holiday_name}_{days_until}_{get_taiwan_today()}"
+
+    if reminder_id in sent_reminders:
+        print(f"今天已發送過提醒：{holiday_name} - {days_until}天")
+        return
+
+    if days_until == 7:
+        message = f"🔔 提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有7天！\n現在開始準備禮物或安排活動吧～"
+    elif days_until == 5:
+        message = f"⏰ 提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有5天！\n別忘了預訂餐廳或準備驚喜哦～"
+    elif days_until == 3:
+        message = f"🚨 重要提醒：{holiday_name} ({target_date.strftime('%m月%d日')}) 還有3天！\n記得買花買禮物！"
+    elif days_until == 1:
+        message = f"🎁 最後提醒：{holiday_name} 就是明天 ({target_date.strftime('%m月%d日')})！\n今晚就要準備好一切了！"
+    elif days_until == 0:
+        message = f"💕 今天就是 {holiday_name} 了！\n祝您和老婆有個美好的一天～"
+    else:
+        return
+
+    try:
+        line_bot_api.push_message(YOUR_USER_ID, TextSendMessage(text=message))
+        sent_reminders.add(reminder_id)
+        print(f"提醒訊息已發送：{holiday_name} - {days_until}天 (台灣時間: {get_taiwan_now()})")
     except Exception as e:
-        print(f"❌ 列出節日失敗：{e}")
-        return "❌ 查詢節日失敗，請稍後再試"
+        print(f"發送訊息失敗：{e}")
+
+def check_all_holidays():
+    """檢查所有節日並發送提醒"""
+    taiwan_time = get_taiwan_now()
+    print(f"正在檢查節日提醒... 台灣時間: {taiwan_time}")
+
+    for holiday_name, date_str in IMPORTANT_DATES.items():
+        days_until, target_date = calculate_days_until(date_str)
+
+        if days_until is not None:
+            print(f"{holiday_name}: 還有 {days_until} 天")
+            if days_until in [7, 5, 3, 1, 0]:
+                send_reminder_message(holiday_name, days_until, target_date)
+
+def clear_old_reminders():
+    """清除舊的提醒記錄（避免記憶體無限增長）"""
+    today_str = str(get_taiwan_today())
+    global sent_reminders
+    sent_reminders = {r for r in sent_reminders if today_str in r}
+
+def list_all_holidays():
+    """列出所有節日"""
+    if not IMPORTANT_DATES:
+        return "目前沒有設定任何重要節日"
+
+    taiwan_time = get_taiwan_now()
+    message = f"📅 已設定的重要節日 (台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M')})：\n\n"
+    for holiday_name, date_str in IMPORTANT_DATES.items():
+        days_until, target_date = calculate_days_until(date_str)
+        if days_until is not None:
+            message += f"• {holiday_name}：{target_date.strftime('%Y年%m月%d日')} (還有{days_until}天)\n"
+
+    return message
 
 @app.route("/", methods=['GET'])
 def home():
@@ -328,46 +354,70 @@ def home():
     return f"""
     🤖 智能生活助手運行中！<br>
     台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}<br>
-    資料庫路徑: {get_db_path()}<br>
-    line-bot-sdk 版本: 1.20.0<br>
-    環境變數檢查:<br>
-    - CHANNEL_ACCESS_TOKEN: {'✅' if CHANNEL_ACCESS_TOKEN else '❌'}<br>
-    - CHANNEL_SECRET: {'✅' if CHANNEL_SECRET else '❌'}<br>
-    - YOUR_USER_ID: {'✅' if YOUR_USER_ID else '❌'}
+    功能: 節日提醒 + 記帳管理<br>
+    資料庫: life_assistant.db<br>
     """
 
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
-    
+
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         print("❌ Invalid signature")
         abort(400)
-    
+
     return 'OK'
+
+@app.route("/manual_check", methods=['GET'])
+def manual_check():
+    """手動觸發節日檢查 - 供外部排程服務使用"""
+    try:
+        check_all_holidays()
+        taiwan_time = get_taiwan_now()
+        return f"✅ 節日檢查完成 (台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')})", 200
+    except Exception as e:
+        print(f"手動檢查錯誤：{e}")
+        return f"❌ 檢查失敗：{e}", 500
+
+@app.route("/status", methods=['GET'])
+def status():
+    """顯示機器人狀態和時間資訊"""
+    taiwan_time = get_taiwan_now()
+    utc_time = datetime.datetime.utcnow()
+
+    status_info = {
+        "status": "運行中",
+        "taiwan_time": taiwan_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "utc_time": utc_time.strftime('%Y-%m-%d %H:%M:%S UTC'),
+        "sent_reminders_count": len(sent_reminders),
+        "holidays_count": len(IMPORTANT_DATES),
+        "database": "life_assistant.db"
+    }
+
+    return json.dumps(status_info, ensure_ascii=False, indent=2)
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text.strip()
-    
+
     print(f"\n=== 收到新訊息 ===")
     print(f"用戶ID: {user_id}")
     print(f"訊息內容: '{user_message}'")
     print(f"當前時間: {get_taiwan_now()}")
-    
+
     try:
         reply_message = None
-        
+
         # 1. 測試功能
         if user_message == "測試":
             taiwan_time = get_taiwan_now()
-            reply_message = f"✅ 機器人運作正常！\n⏰ 台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            reply_message = f"✅ 機器人運作正常！\n⏰ 台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}\n💾 資料庫：已連接"
             print("🧪 回應測試訊息")
-        
+
         # 2. 說明功能
         elif user_message in ['說明', '幫助', '功能', '使用說明']:
             reply_message = """🤖 智能生活助手使用說明
@@ -384,45 +434,64 @@ def handle_message(event):
 
 📅 節日提醒：
 • 查看節日 (或直接說「節日」)
+• 手動檢查 (立即檢查節日)
 
-輸入「測試」檢查機器人狀態"""
+🔧 其他功能：
+• 測試 (檢查機器人狀態)
+• 時間 (查看當前時間)
+
+輸入數字開始記帳！"""
             print("📖 回應說明")
-        
+
         # 3. 節日查詢
         elif any(keyword in user_message for keyword in ['節日', '查看節日', '重要節日', '紀念日', '生日']):
-            reply_message = list_holidays()
+            reply_message = list_all_holidays()
             print("📅 回應節日查詢")
-        
-        # 4. 統計查詢
+
+        # 4. 手動檢查節日
+        elif user_message == "手動檢查":
+            check_all_holidays()
+            taiwan_time = get_taiwan_now()
+            reply_message = f"✅ 已執行節日檢查，如有提醒會另外發送訊息\n台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            print("🔄 手動檢查節日")
+
+        # 5. 時間查詢
+        elif user_message == "時間":
+            taiwan_time = get_taiwan_now()
+            utc_time = datetime.datetime.utcnow()
+            reply_message = f"⏰ 時間資訊：\n台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\nUTC時間: {utc_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            print("⏰ 回應時間查詢")
+
+        # 6. 統計查詢
         elif any(keyword in user_message for keyword in ['今天花', '今日支出', '今天支出', '花了多少']):
             stats = get_statistics(user_id, 'day')
             reply_message = format_statistics(stats)
             print("📊 回應今日統計")
-            
+
         elif any(keyword in user_message for keyword in ['本週', '這週', '週支出']):
             stats = get_statistics(user_id, 'week')
             reply_message = format_statistics(stats)
             print("📊 回應本週統計")
-            
+
         elif any(keyword in user_message for keyword in ['本月', '這個月', '月支出', '收支']):
             stats = get_statistics(user_id, 'month')
             reply_message = format_statistics(stats)
             print("📊 回應本月統計")
-        
-        # 5. 記帳功能
+
+        # 7. 記帳功能
         elif re.search(r'\d+', user_message):
             print("💰 判斷為記帳訊息")
             expense_data = parse_expense_message(user_message)
-            
+
             if expense_data:
                 print(f"✅ 解析成功：{expense_data}")
                 record_id, category = add_expense_record(
-                    user_id, 
-                    expense_data['amount'], 
-                    expense_data['description'], 
+                    user_id,
+                    expense_data['amount'],
+                    expense_data['description'],
                     expense_data['is_income']
                 )
-                
+
                 if record_id:
                     if expense_data['is_income']:
                         reply_message = f"✅ 收入記錄成功！\n💰 +${expense_data['amount']:,.0f}\n📂 {category}\n📝 {expense_data['description']}"
@@ -433,12 +502,12 @@ def handle_message(event):
             else:
                 reply_message = "🤔 無法理解您的記帳格式\n\n請嘗試：\n• 早餐65\n• 午餐花了120\n• +50000薪水"
             print("💰 處理記帳完成")
-        
-        # 6. 其他對話
+
+        # 8. 其他對話
         else:
             reply_message = f"🤖 您好！我是智能生活助手\n\n我可以幫您：\n💰 記帳：「午餐花了80」\n📊 統計：「今天花了多少錢」\n📅 節日：「查看節日」\n\n輸入「說明」查看完整功能"
             print("💬 回應一般對話")
-        
+
         # 回覆訊息
         if reply_message:
             print(f"📤 準備回覆：'{reply_message[:50]}...'")
@@ -447,12 +516,12 @@ def handle_message(event):
                 TextSendMessage(text=reply_message)
             )
             print("✅ 回覆成功")
-        
+
     except Exception as e:
         print(f"❌ 處理訊息錯誤：{e}")
         import traceback
         traceback.print_exc()
-        
+
         try:
             error_message = f"❌ 系統錯誤，請稍後再試\n錯誤類型：{type(e).__name__}"
             line_bot_api.reply_message(
@@ -462,11 +531,40 @@ def handle_message(event):
         except Exception as reply_error:
             print(f"❌ 連錯誤回覆都失敗：{reply_error}")
 
+def run_scheduler():
+    """運行排程器（使用台灣時區）"""
+    # 每天台灣時間凌晨00:00檢查
+    schedule.every().day.at("00:00").do(check_all_holidays)
+    # 每天台灣時間中午12:00檢查
+    schedule.every().day.at("12:00").do(check_all_holidays)
+    # 每天台灣時間凌晨01:00清除舊提醒記錄
+    schedule.every().day.at("01:00").do(clear_old_reminders)
+
+    print(f"排程器已啟動 - 將在每天台灣時間 00:00 和 12:00 執行檢查")
+    print(f"當前台灣時間: {get_taiwan_now()}")
+
+    while True:
+        try:
+            schedule.run_pending()
+            time.sleep(60)
+        except Exception as e:
+            print(f"排程器錯誤：{e}")
+            time.sleep(60)
+
 # 初始化
 print("🚀 正在啟動智能生活助手...")
 print(f"⏰ 當前台灣時間：{get_taiwan_now()}")
-print(f"📁 資料庫路徑：{get_db_path()}")
+
+# 初始化資料庫
 init_database()
+
+# 在背景執行排程器
+scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+scheduler_thread.start()
+
+# 執行啟動檢查
+print("執行啟動檢查...")
+check_all_holidays()
 
 if __name__ == "__main__":
     port = int(os.environ.get('PORT', 5000))
