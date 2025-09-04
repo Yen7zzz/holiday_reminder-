@@ -164,10 +164,13 @@ def handle_message(event):
         reply_message = "請輸入「說明」查看可用指令，或輸入「查看節日」查看已設定的節日"
     
     try:
-        line_bot_api.reply_message(
-            event.reply_token,
-            TextSendMessage(text=reply_message)
-        )
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            reply_message_request = ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[SendTextMessage(text=reply_message)]
+            )
+            line_bot_api.reply_message(reply_message_request)
     except Exception as e:
         print(f"回覆訊息失敗：{e}")
 
