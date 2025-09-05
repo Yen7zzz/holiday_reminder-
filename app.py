@@ -53,10 +53,6 @@ IMPORTANT_DATES = {
 # 用來記錄已發送的提醒
 sent_reminders = set()
 
-# 用來記錄已使用過的 reply token（避免重複使用）
-used_reply_tokens = set()
-token_lock = Lock()
-
 def get_taiwan_now():
     """取得台灣當前時間"""
     return datetime.datetime.now(TAIWAN_TZ)
@@ -64,60 +60,6 @@ def get_taiwan_now():
 def get_taiwan_today():
     """取得台灣今天的日期"""
     return get_taiwan_now().date()
-
-def is_reply_token_used(reply_token):
-    """檢查 reply token 是否已被使用"""
-    with token_lock:
-        if reply_token in used_reply_tokens:
-            return True
-        used_reply_tokens.add(reply_token)
-        # 清理過期的 token（保留最近100個）
-        if len(used_reply_tokens) > 100:
-            used_reply_tokens.clear()
-        return False
-
-def safe_reply_message(reply_token, message, user_id=None):
-    """安全的回覆訊息函數"""
-    # 檢查 reply token 是否已使用
-    if is_reply_token_used(reply_token):
-        print(f"⚠️ Reply token 已使用過，改用 push message")
-        if user_id:
-            try:
-                line_bot_api.push_message(user_id, TextSendMessage(text=message))
-                print("✅ Push message 發送成功")
-                return True
-            except Exception as e:
-                print(f"❌ Push message 發送失敗：{e}")
-                return False
-        else:
-            print("❌ 無 user_id，無法發送 push message")
-            return False
-    
-    # 嘗試使用 reply message
-    try:
-        line_bot_api.reply_message(reply_token, TextSendMessage(text=message))
-        print("✅ Reply message 發送成功")
-        return True
-    except LineBotApiError as e:
-        if e.status_code == 400 and "Invalid reply token" in str(e):
-            print(f"⚠️ Reply token 無效，嘗試 push message")
-            if user_id:
-                try:
-                    line_bot_api.push_message(user_id, TextSendMessage(text=message))
-                    print("✅ Push message 發送成功（備用方案）")
-                    return True
-                except Exception as push_e:
-                    print(f"❌ Push message 也失敗：{push_e}")
-                    return False
-            else:
-                print("❌ 無 user_id，無法使用備用方案")
-                return False
-        else:
-            print(f"❌ Reply message 失敗：{e}")
-            return False
-    except Exception as e:
-        print(f"❌ Reply message 異常：{e}")
-        return False
 
 def generate_ai_response(user_message: str, user_id: str) -> Optional[str]:
     """使用 Google Gemini 生成 AI 回應"""
@@ -380,12 +322,10 @@ def status():
 def handle_message(event):
     user_id = event.source.user_id
     user_message = event.message.text.strip()
-    reply_token = event.reply_token
 
     print(f"\n=== 收到新訊息 ===")
     print(f"用戶ID: {user_id}")
     print(f"訊息內容: '{user_message}'")
-    print(f"Reply Token: {reply_token[:20]}...")
     print(f"當前時間: {get_taiwan_now()}")
 
     try:
@@ -468,22 +408,25 @@ def handle_message(event):
 輸入「說明」查看完整功能"""
                 print("🤖 AI 回應失敗，使用預設回應")
 
-        # 使用安全的回覆函數
+        # 回覆訊息
         if reply_message:
             print(f"📤 準備回覆：'{reply_message[:50]}...'")
-            success = safe_reply_message(reply_token, reply_message, user_id)
-            if success:
-                print("✅ 回覆成功")
-            else:
-                print("❌ 回覆失敗")
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=reply_message)
+            )
+            print("✅ 回覆成功")
 
+    except LineBotApiError as e:
+        print(f"❌ LINE Bot API 錯誤：{e}")
+        # 不要再嘗試回覆，避免重複使用 reply token
+        print("💬 跳過錯誤回覆，避免 token 重複使用")
     except Exception as e:
         print(f"❌ 處理訊息錯誤：{e}")
         import traceback
         traceback.print_exc()
-
-        # 錯誤處理：不再使用 reply_token，直接記錄錯誤
-        print(f"💬 錯誤訊息將不會回覆給用戶，避免 token 重複使用問題")
+        # 也不要在這裡回覆錯誤訊息，避免 token 問題
+        print("💬 跳過錯誤回覆，避免 token 重複使用")
 
 def run_scheduler():
     """運行排程器（使用台灣時區）"""
@@ -500,7 +443,7 @@ def run_scheduler():
     while True:
         try:
             schedule.run_pending()
-            time.sleep(60)
+            time.sleep(60)  # 每 60 秒檢查一次排程
         except Exception as e:
             print(f"排程器錯誤：{e}")
             time.sleep(60)
