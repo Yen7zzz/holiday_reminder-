@@ -6,6 +6,7 @@ import sqlite3
 import schedule
 import time
 import threading
+import requests
 from threading import Lock
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
@@ -14,14 +15,13 @@ from flask import Flask, request, abort
 import google.generativeai as genai
 import yfinance as yf
 from typing import Optional
-import asyncio
 
 app = Flask(__name__)
 
 # 設定台灣時區
 TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
-# Line Bot 設定
+# Line Bot 設定 - 從環境變數取得
 CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN',
 'KRk+bAgSSozHdXGPpcFYLSYMk+4T27W/OTDDJmECpMT4uKQgQDGkLGl5+IRVURdrQ7RHLF1vUqnQU542ZFBWZJZapRi/zg0iuJJeAGM7kXIhFJqHAeKv88+yqHayFXa140YGdC2Va1wahK9QNfV8uwdB04t89/1O/w1cDnyilFU=')
 CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', 'b7f5d7b95923fbc5f494619885a68a04')
@@ -64,7 +64,7 @@ def get_taiwan_today():
 def generate_ai_response(user_message: str, user_id: str) -> Optional[str]:
     """使用 Google Gemini 生成 AI 回應"""
     try:
-        if not GOOGLE_AI_API_KEY:
+        if not GOOGLE_AI_API_KEY or GOOGLE_AI_API_KEY == 'your_api_key':
             return None
 
         system_prompt = """你是一個友善的智能生活助手機器人，角色名稱為「綾小路 清隆」。
@@ -72,7 +72,7 @@ def generate_ai_response(user_message: str, user_id: str) -> Optional[str]:
 - 使用繁體中文（台灣用法），說明淺顯、白話且詳實。
 - 請採取懷疑與質問的態度，並用前瞻性的觀點指出未來可能影響。
 - 回應主色調：冷酷但機智的吐槽 + 必要時溫暖且鼓勵的結尾。
-- 偶爾使用適當的 emoji。
+- 偶爾使用適當的表情符號。
 
 功能與行為準則：
 - 專精：生活建議、股票查詢、節日提醒、人生開導。
@@ -173,12 +173,13 @@ class StockService:
             return f"❌ 獲取 {symbol.upper()} 資訊失敗：{str(e)}"
 
 def calculate_days_until(target_date_str):
-    """計算距離目標日期還有幾天"""
+    """計算距離目標日期還有幾天（使用台灣時間）"""
     try:
         target_date = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
         current_year = get_taiwan_today().year
         current_date = get_taiwan_today()
 
+        # 如果是年度循環的節日（生日、紀念日等）
         if any(keyword in target_date_str for keyword in ["生日", "紀念日", "情人節", "七夕", "聖誕節"]):
             target_date = target_date.replace(year=current_year)
             if target_date < current_date:
@@ -191,6 +192,7 @@ def calculate_days_until(target_date_str):
 
 def send_reminder_message(holiday_name, days_until, target_date):
     """發送提醒訊息"""
+    # 建立唯一的提醒 ID，避免同一天重複發送
     reminder_id = f"{holiday_name}_{days_until}_{get_taiwan_today()}"
 
     if reminder_id in sent_reminders:
@@ -213,7 +215,7 @@ def send_reminder_message(holiday_name, days_until, target_date):
     try:
         line_bot_api.push_message(YOUR_USER_ID, TextSendMessage(text=message))
         sent_reminders.add(reminder_id)
-        print(f"提醒訊息已發送：{holiday_name} - {days_until}天")
+        print(f"提醒訊息已發送：{holiday_name} - {days_until}天 (台灣時間: {get_taiwan_now()})")
     except Exception as e:
         print(f"發送訊息失敗：{e}")
 
@@ -224,13 +226,14 @@ def check_all_holidays():
 
     for holiday_name, date_str in IMPORTANT_DATES.items():
         days_until, target_date = calculate_days_until(date_str)
+
         if days_until is not None:
             print(f"{holiday_name}: 還有 {days_until} 天")
             if days_until in [7, 5, 3, 1, 0]:
                 send_reminder_message(holiday_name, days_until, target_date)
 
 def clear_old_reminders():
-    """清除舊的提醒記錄"""
+    """清除舊的提醒記錄（避免記憶體無限增長）"""
     today_str = str(get_taiwan_today())
     global sent_reminders
     sent_reminders = {r for r in sent_reminders if today_str in r}
@@ -249,6 +252,21 @@ def list_all_holidays():
 
     return message
 
+def keep_alive():
+    """每 25 分鐘自己戳自己一下，避免 Render 休眠"""
+    app_url = os.environ.get('RENDER_EXTERNAL_URL', '')
+    if not app_url:
+        print("⚠️ 未設定 RENDER_EXTERNAL_URL，跳過自我喚醒功能")
+        return
+    
+    while True:
+        try:
+            time.sleep(25 * 60)  # 等待 25 分鐘
+            response = requests.get(f"{app_url}/", timeout=10)
+            print(f"✅ 自我喚醒完成 - {get_taiwan_now()} - Status: {response.status_code}")
+        except Exception as e:
+            print(f"❌ 自我喚醒失敗：{e}")
+
 @app.route("/", methods=['GET'])
 def home():
     taiwan_time = get_taiwan_now()
@@ -256,6 +274,7 @@ def home():
     🤖 智能生活助手運行中！<br>
     台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}<br>
     功能: 節日提醒 + AI對話 + 股票查詢<br>
+    狀態: 正常運行<br>
     """
 
 @app.route("/callback", methods=['POST'])
@@ -273,13 +292,31 @@ def callback():
 
 @app.route("/manual_check", methods=['GET'])
 def manual_check():
-    """手動觸發節日檢查"""
+    """手動觸發節日檢查 - 供外部排程服務使用"""
     try:
         check_all_holidays()
         taiwan_time = get_taiwan_now()
         return f"✅ 節日檢查完成 (台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')})", 200
     except Exception as e:
+        print(f"手動檢查錯誤：{e}")
         return f"❌ 檢查失敗：{e}", 500
+
+@app.route("/status", methods=['GET'])
+def status():
+    """顯示機器人狀態和時間資訊"""
+    taiwan_time = get_taiwan_now()
+    utc_time = datetime.datetime.utcnow()
+
+    status_info = {
+        "status": "運行中",
+        "taiwan_time": taiwan_time.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "utc_time": utc_time.strftime('%Y-%m-%d %H:%M:%S UTC'),
+        "sent_reminders_count": len(sent_reminders),
+        "holidays_count": len(IMPORTANT_DATES),
+        "features": "節日提醒 + AI對話 + 股票查詢"
+    }
+
+    return json.dumps(status_info, ensure_ascii=False, indent=2)
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
@@ -298,6 +335,7 @@ def handle_message(event):
         if user_message == "測試":
             taiwan_time = get_taiwan_now()
             reply_message = f"✅ 機器人運作正常！\n⏰ 台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}\n🔧 功能：節日提醒 + AI對話 + 股票查詢"
+            print("🧪 回應測試訊息")
 
         # 2. 說明功能
         elif user_message in ['說明', '幫助', '功能', '使用說明']:
@@ -318,37 +356,47 @@ def handle_message(event):
 🔧 其他功能：
 • 測試 (檢查機器人狀態)
 • 時間 (查看當前時間)"""
+            print("📖 回應說明")
 
         # 3. 節日查詢
         elif any(keyword in user_message for keyword in ['節日', '查看節日', '重要節日', '紀念日', '生日']):
             reply_message = list_all_holidays()
+            print("📅 回應節日查詢")
 
         # 4. 手動檢查節日
         elif user_message == "手動檢查":
             check_all_holidays()
             taiwan_time = get_taiwan_now()
             reply_message = f"✅ 已執行節日檢查，如有提醒會另外發送訊息\n台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}"
+            print("🔄 手動檢查節日")
 
         # 5. 時間查詢
         elif user_message == "時間":
             taiwan_time = get_taiwan_now()
-            reply_message = f"⏰ 台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+            utc_time = datetime.datetime.utcnow()
+            reply_message = f"⏰ 時間資訊：\n台灣時間: {taiwan_time.strftime('%Y-%m-%d %H:%M:%S %Z')}\nUTC時間: {utc_time.strftime('%Y-%m-%d %H:%M:%S UTC')}"
+            print("⏰ 回應時間查詢")
 
         # 6. 股票功能
         elif user_message.startswith("股票 ") or user_message.startswith("股價 "):
             stock_symbol = user_message.split(" ", 1)[1].strip().upper()
             reply_message = StockService.get_stock_info(stock_symbol)
+            print("📊 回應股票查詢")
 
         elif user_message.startswith("驗證 "):
             stock_symbol = user_message.split(" ", 1)[1].strip().upper()
             is_valid, validation_message = StockService.validate_stock_symbol(stock_symbol)
             reply_message = validation_message
+            print("🔍 回應股票驗證")
 
         # 7. AI 智能對話
         elif should_use_ai_response(user_message):
+            print("🤖 使用 AI 生成回應")
             ai_response = generate_ai_response(user_message, user_id)
+
             if ai_response:
                 reply_message = ai_response
+                print("🤖 AI 回應生成成功")
             else:
                 reply_message = """🤖 您好！我是智能生活助手
 
@@ -358,18 +406,24 @@ def handle_message(event):
 🤖 AI對話：直接說出您的想法
 
 輸入「說明」查看完整功能"""
+                print("🤖 AI 回應失敗，使用預設回應")
 
         # 回覆訊息
         if reply_message:
+            print(f"📤 準備回覆：'{reply_message[:50]}...'")
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=reply_message)
             )
+            print("✅ 回覆成功")
 
     except Exception as e:
         print(f"❌ 處理訊息錯誤：{e}")
+        import traceback
+        traceback.print_exc()
+
         try:
-            error_message = "❌ 系統暫時忙碌，請稍後再試"
+            error_message = f"❌ 系統錯誤，請稍後再試\n錯誤類型：{type(e).__name__}"
             line_bot_api.reply_message(
                 event.reply_token,
                 TextSendMessage(text=error_message)
@@ -378,9 +432,12 @@ def handle_message(event):
             print(f"❌ 連錯誤回覆都失敗：{reply_error}")
 
 def run_scheduler():
-    """運行排程器"""
+    """運行排程器（使用台灣時區）"""
+    # 每天台灣時間凌晨00:00檢查
     schedule.every().day.at("00:00").do(check_all_holidays)
+    # 每天台灣時間中午12:00檢查
     schedule.every().day.at("12:00").do(check_all_holidays)
+    # 每天台灣時間凌晨01:00清除舊提醒記錄
     schedule.every().day.at("01:00").do(clear_old_reminders)
 
     print(f"排程器已啟動 - 將在每天台灣時間 00:00 和 12:00 執行檢查")
@@ -401,6 +458,12 @@ print(f"⏰ 當前台灣時間：{get_taiwan_now()}")
 # 在背景執行排程器
 scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
 scheduler_thread.start()
+
+# 在背景執行自我喚醒（僅在 Render 環境中）
+if os.environ.get('RENDER'):
+    keep_alive_thread = threading.Thread(target=keep_alive, daemon=True)
+    keep_alive_thread.start()
+    print("🔄 自我喚醒機制已啟動")
 
 # 執行啟動檢查
 print("執行啟動檢查...")
