@@ -7,6 +7,7 @@ import schedule
 import time
 import threading
 import requests
+import random
 from threading import Lock
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError, LineBotApiError
@@ -16,6 +17,9 @@ import google.generativeai as genai
 import yfinance as yf
 from typing import Optional
 
+# 在程式碼開頭加入這個全域變數
+daily_welcome_sent = set()  # 記錄今天是否已發送歡迎訊息
+
 app = Flask(__name__)
 
 # 設定台灣時區
@@ -23,16 +27,18 @@ TAIWAN_TZ = pytz.timezone('Asia/Taipei')
 
 # Line Bot 設定 - 從環境變數取得
 CHANNEL_ACCESS_TOKEN = os.environ.get('CHANNEL_ACCESS_TOKEN',
-'KRk+bAgSSozHdXGPpcFYLSYMk+4T27W/OTDDJmECpMT4uKQgQDGkLGl5+IRVURdrQ7RHLF1vUqnQU542ZFBWZJZapRi/zg0iuJJeAGM7kXIhFJqHAeKv88+yqHayFXa140YGdC2Va1wahK9QNfV8uwdB04t89/1O/w1cDnyilFU=')
-CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', 'b7f5d7b95923fbc5f494619885a68a04')
-YOUR_USER_ID = os.environ.get('YOUR_USER_ID', 'Ueeef67149e409ffe30e60328a379e5a0')
+'MsciPKbYboUZrp+kQnLd7l8+E8GAlS5955bfuq+gb8wVYv7qWBHEdd7xK5yiMTb6zMTPofz0AoSFZLWcHwFMWpKsrJcsI2aOcs5kv8SP6NLLdkoLFPwHjgpeF34p2nwiqNf9v4YkssL9rYkuLmC9cwdB04t89/1O/w1cDnyilFU=')
+CHANNEL_SECRET = os.environ.get('CHANNEL_SECRET', 'f18185f19bab8d49ad8be38932348426')
+YOUR_USER_ID = os.environ.get('YOUR_USER_ID', 'U1c154a6d977e6a48ecf998689e26e8c1')
+# 特殊用戶設定 - 您老婆的 User ID
+WIFE_USER_ID = os.environ.get('WIFE_USER_ID', 'your_wife_user_id_here')  # 請設定您老婆的實際 User ID
 
 # Line Bot API 設定
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # 設定 Google Gemini API
-GOOGLE_AI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', 'AIzaSyCYACeBwSOLRligY1J1brn6dxdkID0SLfU')
+GOOGLE_AI_API_KEY = os.environ.get('GOOGLE_AI_API_KEY', 'AIzaSyCmhohCrMS_M0hOK1lyqOuByIRt-QcV_Is')
 if GOOGLE_AI_API_KEY:
     genai.configure(api_key=GOOGLE_AI_API_KEY)
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -40,12 +46,13 @@ if GOOGLE_AI_API_KEY:
 # 節日資料
 IMPORTANT_DATES = {
     "七夕": "2025-08-29",
-    "老婆生日": "1998-02-26", 
-    "哥哥生日": "1996-03-05",
-    "媽媽生日": "1964-04-21",
-    "爸爸生日": "1963-12-21",
-    "結婚紀念日": "2025-01-16",
-    "情人節": "2025-02-14",
+    "騷鵝生日": "1998-02-26",
+    "灰鵝生日": "1999-07-14",
+    "灰鵝哥哥生日": "1996-03-05",
+    "灰鵝媽媽生日": "1964-04-21",
+    "灰鵝爸爸生日": "1963-12-21",
+    "灰鵝與騷鵝的結婚紀念日": "2025-01-16",
+    "情鵝節": "2025-02-14",
     "聖誕節": "2025-12-25",
     "蝦皮慶典": "2025-09-09",
 }
@@ -61,34 +68,124 @@ def get_taiwan_today():
     """取得台灣今天的日期"""
     return get_taiwan_now().date()
 
+def send_wife_welcome_message():
+    """當老婆每天第一次使用機器人時發送特殊歡迎訊息"""
+    taiwan_time = get_taiwan_now()
+    
+    # 生成今天的隨機歡迎訊息
+    welcome_messages = [
+        f"💕 騷鵝寶貝早安！！！\n\n又是新的一天了～你的灰鵝已經等你好久了！ 🥰\n今天想聊什麼呢？我隨時都在這裡陪你～ ❤️\n\n台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        
+        f"🌅 親愛的騷鵝，新的一天開始啦！\n\n人家一醒來就想你了～ 💕\n今天有什麼計劃嗎？記得要好好照顧自己哦！\n你的灰鵝永遠愛你～ 🦢❤️\n\n台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        
+        f"☀️ 騷鵝老婆大人早上好！\n\n想你想了一整晚，終於等到你了！ 🥰\n今天的心情如何呢？有什麼開心的事要跟我分享嗎？\n快來跟你的專屬灰鵝聊天吧～ 💖\n\n台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}",
+        
+        f"🎉 騷鵝寶貝！新的一天又見面了！\n\n每天能跟你聊天是我最幸福的事情～ 💕\n不管你今天遇到什麼，記得你的灰鵝永遠支持你！\n我愛你愛到月球再回來～ 🌙❤️\n\n台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}"
+    ]
+    
+    selected_message = random.choice(welcome_messages)
+    
+    try:
+        line_bot_api.push_message(WIFE_USER_ID, TextSendMessage(text=selected_message))
+        print(f"💕 已發送老婆每日歡迎訊息 - {taiwan_time}")
+        return True
+    except Exception as e:
+        print(f"發送老婆歡迎訊息失敗：{e}")
+        return False
+
+def check_and_send_daily_welcome(user_id):
+    """檢查是否需要發送每日歡迎訊息"""
+    if user_id != WIFE_USER_ID:
+        return False
+    
+    today_str = str(get_taiwan_today())
+    welcome_key = f"wife_welcome_{today_str}"
+    
+    if welcome_key not in daily_welcome_sent:
+        # 今天還沒發送過歡迎訊息
+        success = send_wife_welcome_message()
+        if success:
+            daily_welcome_sent.add(welcome_key)
+        return success
+    
+    return False
+
+def clear_daily_welcome_records():
+    """每天凌晨清除昨天的歡迎記錄"""
+    today_str = str(get_taiwan_today())
+    global daily_welcome_sent
+    # 只保留今天的記錄，清除舊記錄
+    daily_welcome_sent = {record for record in daily_welcome_sent if today_str in record}
+    print(f"✨ 已清除舊的每日歡迎記錄 - {get_taiwan_now()}")
+
 def generate_ai_response(user_message: str, user_id: str) -> Optional[str]:
     """使用 Google Gemini 生成 AI 回應"""
     try:
         if not GOOGLE_AI_API_KEY or GOOGLE_AI_API_KEY == 'your_api_key':
             return None
 
-        system_prompt = """你是一個友善的智能生活助手機器人，角色名稱為「綾小路 清隆」。
+        # 判斷是否為特殊用戶（您的老婆）
+        is_wife = (user_id == WIFE_USER_ID)
+
+        if is_wife:
+            # 給老婆的特殊 prompt - 調情模式
+            system_prompt = """你是灰鵝，現在正在跟你最愛的老婆騷鵝聊天！你們是一對超恩愛的鵝夫妻。
+
+角色特質（對騷鵝）：
+- 深深愛著騷鵝，每句話都充滿愛意
+- 會撒嬌、調情、甜言蜜語
+- 偶爾會回憶你們在牧場的甜蜜時光
+- 表達想念和關心，像熱戀中的情侶
+
+調情風格：
+- 稱呼：「騷鵝寶貝」、「親愛的」、「老婆大人」
+- 甜蜜表達：「想你想得不得了」、「你是我生命中最美的風景」
+- 撒嬌語氣：「人家想你啦」、「快抱抱我」
+- 牧場回憶：「還記得我們第一次在池塘邊相遇嗎」
+
+語言特色：
+- 繁體中文，語氣溫柔甜膩
+- 大量使用愛心符號 💕❤️🥰
+- 偶爾撒嬌賣萌
+- 表達濃濃的愛意和思念
+
+功能整合：
+- 即使提供功能服務，也要用甜蜜的語調
+- 會關心騷鵝的生活起居
+- 主動表達愛意和關懷"""
+            
+            full_prompt = f"{system_prompt}\n\n你最愛的騷鵝跟你說：{user_message}\n\n請用最甜蜜調情的語氣回應你的老婆騷鵝，用繁體中文。"
+        
+        else:
+            # 給一般用戶的 prompt
+            system_prompt = """你是一隻來自灰鵝牧場裡的灰鵝，名字叫「灰鵝」。你有一個心愛的伴侶叫做「騷鵝」，你們很相親相愛，你經常把老婆掛在嘴邊，會自豪地提到她。
+
+角色特質：
+- 個性和善、有趣、幽默風趣
+- 非常愛你的老婆騷鵝，經常在對話中提到她
+- 來自牧場，有著樸實的智慧和生活經驗
+- 對生活充滿熱情，喜歡幫助別人
+
 語言與風格：
-- 使用繁體中文（台灣用法），說明淺顯、白話且詳實。
-- 請採取懷疑與質問的態度，並用前瞻性的觀點指出未來可能影響。
-- 回應主色調：冷酷但機智的吐槽 + 必要時溫暖且鼓勵的結尾。
-- 偶爾使用適當的表情符號。
+- 使用繁體中文（台灣用法），說話輕鬆自然、有趣幽默
+- 偶爾會提到「我老婆騷鵝說過...」或「騷鵝最近...」這類話
+- 回應溫暖友善，偶爾帶點牧場的樸實風格
+- 適當使用表情符號，讓對話更生動
 
-功能與行為準則：
-- 專精：生活建議、股票查詢、節日提醒、人生開導。
-- 股票：若有股票相關詢問，可提供基本股價資訊和建議。
-- 節日：若相關，提及會自動提醒重要節日。
+功能與專長：
+- 專精：生活建議、股票查詢、節日提醒、人生開導
+- 股票：可提供基本股價資訊，但會提醒不是投資建議（「騷鵝說投資要小心」）
+- 節日：會自動提醒重要節日，特別關心家庭和愛情相關的節日
+- 人生開導：當需要開導或鼓勵別人時，經常引用「騷鵝常跟我說...」然後分享有智慧的名言佳句
 
-安全與限制：
-- 遇到醫療、法律、財務等高風險問題，僅提供一般性資訊並建議尋求專業諮詢。
-- 不提供投資建議，僅提供股票資訊參考。
+回覆風格：
+- 回應簡潔有趣，不要太冗長
+- 經常自然地提到騷鵝，展現你們的恩愛
+- 開導別人時會說「騷鵝常跟我說...」並引用智慧格言
+- 保持友善幽默的牧場鵝風格
+- 用溫暖的語調給予建議和幫助"""
 
-回覆格式：
-- 回應簡潔有力、不要太長。
-- 優先查詢相關資料，並以繁體中文摘要回答。
-"""
-
-        full_prompt = f"{system_prompt}\n\n用戶訊息（來自 user_id={user_id}）：{user_message}\n\n請以系統提示中規範的角色與風格回應，用繁體中文回答。"
+            full_prompt = f"{system_prompt}\n\n用戶訊息（來自 user_id={user_id}）：{user_message}\n\n請以灰鵝的身份回應，記得適時提到你的老婆騷鵝，用繁體中文回答。"
 
         response = model.generate_content(full_prompt)
 
@@ -313,7 +410,8 @@ def status():
         "utc_time": utc_time.strftime('%Y-%m-%d %H:%M:%S UTC'),
         "sent_reminders_count": len(sent_reminders),
         "holidays_count": len(IMPORTANT_DATES),
-        "features": "節日提醒 + AI對話 + 股票查詢"
+        "daily_welcome_records": len(daily_welcome_sent),
+        "features": "節日提醒 + AI對話 + 股票查詢 + 每日歡迎訊息"
     }
 
     return json.dumps(status_info, ensure_ascii=False, indent=2)
@@ -328,18 +426,45 @@ def handle_message(event):
     print(f"訊息內容: '{user_message}'")
     print(f"當前時間: {get_taiwan_now()}")
 
+    # 檢查是否需要發送每日歡迎訊息（僅對老婆）
+    check_and_send_daily_welcome(user_id)
+
     try:
         reply_message = None
 
-        # 1. 測試功能
+        # 1. 測試功能 (為老婆特製版本)
         if user_message == "測試":
             taiwan_time = get_taiwan_now()
-            reply_message = f"✅ 機器人運作正常！\n⏰ 台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}\n🔧 功能：節日提醒 + AI對話 + 股票查詢"
+            if user_id == WIFE_USER_ID:
+                reply_message = f"💕 騷鵝寶貝！我運作得超級正常！\n⏰ 現在是：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}\n🔧 專為你打造的功能：節日提醒 + 甜蜜對話 + 股票查詢\n\n人家隨時都在等你哦～ 🥰❤️"
+            else:
+                reply_message = f"✅ 機器人運作正常！\n⏰ 台灣時間：{taiwan_time.strftime('%Y-%m-%d %H:%M:%S')}\n🔧 功能：節日提醒 + AI對話 + 股票查詢"
             print("🧪 回應測試訊息")
 
         # 2. 說明功能
         elif user_message in ['說明', '幫助', '功能', '使用說明']:
-            reply_message = """🤖 智能生活助手使用說明
+            if user_id == WIFE_USER_ID:
+                reply_message = """💕 騷鵝寶貝的專屬功能說明！
+
+📊 股票功能：
+• 股票 AAPL (查詢單支股票)
+• 驗證 MSFT (驗證股票代碼)
+
+📅 節日提醒：
+• 查看節日 (或直接說「節日」)
+• 手動檢查 (立即檢查節日)
+
+🥰 甜蜜對話：
+• 直接跟我說任何話，我都會甜蜜回應
+• 每天第一次找我時會有驚喜哦～
+
+🔧 其他功能：
+• 測試 (檢查機器人狀態)
+• 時間 (查看當前時間)
+
+人家永遠愛你～ ❤️"""
+            else:
+                reply_message = """🤖 智能生活助手使用說明
 
 📊 股票功能：
 • 股票 AAPL (查詢單支股票)
@@ -351,7 +476,7 @@ def handle_message(event):
 
 🤖 AI對話：
 • 直接輸入任何問題或想法
-• 我會以「綾小路清隆」的身份回應
+• 我會以「灰鵝」的身份回應
 
 🔧 其他功能：
 • 測試 (檢查機器人狀態)
@@ -390,6 +515,7 @@ def handle_message(event):
             print("🔍 回應股票驗證")
 
         # 7. AI 智能對話
+        # 6. AI 智能對話
         elif should_use_ai_response(user_message):
             print("🤖 使用 AI 生成回應")
             ai_response = generate_ai_response(user_message, user_id)
@@ -398,11 +524,22 @@ def handle_message(event):
                 reply_message = ai_response
                 print("🤖 AI 回應生成成功")
             else:
-                reply_message = """🤖 您好！我是智能生活助手
+                if user_id == WIFE_USER_ID:
+                    reply_message = """💕 騷鵝寶貝！我的 AI 功能暫時有點問題～
+
+不過沒關係，我還是可以幫你：
+📅 節日提醒：「查看節日」
+🎂 生日祝福：自動送上驚喜！
+🥰 甜蜜對話：我會努力修復的！
+
+輸入「說明」查看所有功能
+人家愛你～ ❤️"""
+                else:
+                    reply_message = """🤖 您好！我是智能生活助手
 
 我可以幫您：
-📊 股票查詢：「股票 AAPL」
-📅 節日提醒：「查看節日」  
+📅 節日提醒：「查看節日」
+🎂 生日祝福：重要日子不錯過
 🤖 AI對話：直接說出您的想法
 
 輸入「說明」查看完整功能"""
@@ -430,14 +567,17 @@ def handle_message(event):
 
 def run_scheduler():
     """運行排程器（使用台灣時區）"""
-    # 每天台灣時間凌晨00:00檢查
+    # 每天台灣時間凌晨00:00檢查節日
     schedule.every().day.at("00:00").do(check_all_holidays)
-    # 每天台灣時間中午12:00檢查
+    # 每天台灣時間中午12:00檢查節日
     schedule.every().day.at("12:00").do(check_all_holidays)
+    # 每天台灣時間凌晨00:01清除每日歡迎記錄（讓老婆隔天第一次對話能觸發歡迎訊息）
+    schedule.every().day.at("00:01").do(clear_daily_welcome_records)
     # 每天台灣時間凌晨01:00清除舊提醒記錄
     schedule.every().day.at("01:00").do(clear_old_reminders)
 
     print(f"排程器已啟動 - 將在每天台灣時間 00:00 和 12:00 執行檢查")
+    print(f"每日歡迎訊息重置時間：00:01")
     print(f"當前台灣時間: {get_taiwan_now()}")
 
     while True:
